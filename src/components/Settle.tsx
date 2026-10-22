@@ -6,6 +6,7 @@ import {
   ARC_TESTNET_CHAIN_ID, ARC_MAINNET_CHAIN_ID, NETWORKS, TAB_ABI,
   tabDomain, VOUCHER_TYPES, formatAddr, buildExplorerTxUrl,
 } from '@/tabContract'
+import { getLatestVoucherForChain, getLastTabId } from './PayPerCall'
 import { ExternalLink, CheckCircle, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -13,15 +14,6 @@ interface Voucher {
   tabId: string
   cumulative: string
   signature: string
-}
-
-function getLatestVoucher(tabId: string): Voucher | null {
-  try {
-    const store = JSON.parse(localStorage.getItem('tab-vouchers') ?? '{}') as Record<string, { cumulative: string; signature: string }>
-    const saved = store[tabId]
-    if (!saved) return null
-    return { tabId, ...saved }
-  } catch { return null }
 }
 
 export function Settle() {
@@ -100,12 +92,18 @@ export function Settle() {
   }
 
   function loadLatest() {
-    if (!tabId) {
-      toast.error('Enter a Tab ID first')
+    if (!chainId) return
+    // Use the tabId already parsed from the form if available; otherwise fall
+    // back to the most-recently-signed tab for this chain.
+    const resolvedTabId = tabId !== null
+      ? tabId.toString()
+      : getLastTabId(chainId)
+    if (!resolvedTabId) {
+      toast.error('No local voucher found — make some calls first')
       return
     }
-    const v = getLatestVoucher(tabId.toString())
-    if (!v) { toast.error('No local voucher for this tab'); return }
+    const v = getLatestVoucherForChain(chainId, resolvedTabId)
+    if (!v) { toast.error(`No local voucher for tab ${resolvedTabId}`); return }
     const json = JSON.stringify(v, null, 2)
     setVoucherJson(json)
     parseVoucher(json)

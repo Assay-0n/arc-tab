@@ -19,13 +19,65 @@ interface VoucherStore {
   [tabId: string]: { cumulative: string; signature: string }
 }
 
-function getVoucherStore(): VoucherStore {
-  try { return JSON.parse(localStorage.getItem('tab-vouchers') ?? '{}') as VoucherStore } catch { return {} }
+/** localStorage key for the per-chain voucher store. */
+function voucherStoreKey(chainId: number) {
+  return `tab-vouchers:${chainId}`
 }
-function setVoucherInStore(tabId: string, cumulative: bigint, signature: string) {
-  const store = getVoucherStore()
+
+/** localStorage key for the most-recently-signed tab id, per chain. */
+function lastTabKey(chainId: number) {
+  return `tab-vouchers-last:${chainId}`
+}
+
+/**
+ * Read the voucher store for a given chain.
+ * Migration: if no chain-keyed store exists yet and we are on mainnet, treat
+ * the legacy unkeyed 'tab-vouchers' entry as belonging to mainnet and migrate
+ * it on first read. On any other chain we simply start fresh.
+ */
+function getVoucherStore(chainId: number): VoucherStore {
+  try {
+    const key = voucherStoreKey(chainId)
+    const raw = localStorage.getItem(key)
+    if (raw) return JSON.parse(raw) as VoucherStore
+    // Migration: pull the old unkeyed store into mainnet on first access
+    if (chainId === 5042) {
+      const legacy = localStorage.getItem('tab-vouchers')
+      if (legacy) {
+        const parsed = JSON.parse(legacy) as VoucherStore
+        localStorage.setItem(key, legacy)
+        localStorage.removeItem('tab-vouchers')
+        return parsed
+      }
+    }
+    return {}
+  } catch { return {} }
+}
+
+function setVoucherInStore(chainId: number, tabId: string, cumulative: bigint, signature: string) {
+  const store = getVoucherStore(chainId)
   store[tabId] = { cumulative: cumulative.toString(), signature }
-  localStorage.setItem('tab-vouchers', JSON.stringify(store))
+  localStorage.setItem(voucherStoreKey(chainId), JSON.stringify(store))
+  // Record which tab was signed most recently so Settle can auto-fill
+  localStorage.setItem(lastTabKey(chainId), tabId)
+}
+
+/** Read the most-recently-signed tabId for a chain. */
+export function getLastTabId(chainId: number): string | null {
+  return localStorage.getItem(lastTabKey(chainId))
+}
+
+/** Read the latest voucher for a given (chainId, tabId) pair. */
+export function getLatestVoucherForChain(
+  chainId: number,
+  tabId: string,
+): { tabId: string; cumulative: string; signature: string } | null {
+  try {
+    const store = getVoucherStore(chainId)
+    const saved = store[tabId]
+    if (!saved) return null
+    return { tabId, ...saved }
+  } catch { return null }
 }
 
 export function PayPerCall() {
@@ -58,12 +110,13 @@ export function PayPerCall() {
 
   // Load last cumulative from localStorage when tab changes
   useEffect(() => {
-    const store = getVoucherStore()
+    if (!chainId) { setCurrentCumulative(0n); setCallLog([]); return }
+    const store = getVoucherStore(chainId)
     const saved = tabId !== null ? store[tabId.toString()] : undefined
     setCurrentCumulative(saved ? BigInt(saved.cumulative) : 0n)
     setCallLog([])
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabIdStr]) // intentionally keyed on the raw string, not parsed tabId
+  }, [tabIdStr, chainId]) // intentionally keyed on the raw string, not parsed tabId
 
   const { signTypedDataAsync } = useSignTypedData()
 
@@ -111,7 +164,7 @@ export function PayPerCall() {
       })
 
       setCurrentCumulative(nextCumulative)
-      setVoucherInStore(tabId.toString(), nextCumulative, signature)
+      setVoucherInStore(chainId!, tabId.toString(), nextCumulative, signature)
       setApiResult(timeStr)
 
       const entry: CallLogEntry = {
@@ -130,11 +183,11 @@ export function PayPerCall() {
       setCalling(false)
       void refetchTab()
     }
-  }, [net, tabId, address, parsedPrice, currentCumulative, callLog.length, tabData, signTypedDataAsync, refetchTab])
+  }, [net, tabId, chainId, address, parsedPrice, currentCumulative, callLog.length, tabData, signTypedDataAsync, refetchTab])
 
   function handleCopyVoucher() {
-    if (tabId === null) return
-    const store = getVoucherStore()
+    if (tabId === null || !chainId) return
+    const store = getVoucherStore(chainId)
     const saved = store[tabId.toString()]
     if (!saved) { toast.error('No voucher yet — make a call first'); return }
     const json = JSON.stringify({ tabId: tabId.toString(), cumulative: saved.cumulative, signature: saved.signature }, null, 2)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { erc20Abi, parseUnits } from 'viem'
+import { erc20Abi, parseUnits, parseEventLogs } from 'viem'
 import { ARC_TESTNET_CHAIN_ID, ARC_MAINNET_CHAIN_ID, NETWORKS, TAB_ABI, buildExplorerTxUrl } from '@/tabContract'
 import { ExternalLink } from 'lucide-react'
 
@@ -51,22 +51,24 @@ export function OpenTab() {
     void refetchAllowance()
   }
 
-  // Parse tabId from TabOpened event
+  // Parse tabId from TabOpened event — filter by the Tab contract address so we
+  // never accidentally pick up a Transfer log from the USDC contract first.
   const tabId = (() => {
-    if (!openReceipt) return null
-    // TabOpened(uint256 indexed tabId, ...)
-    for (const log of openReceipt.logs) {
-      if (log.topics.length >= 2) {
-        try {
-          const topic = log.topics[1]
-          if (!topic) continue
-          return BigInt(topic)
-        } catch {
-          // continue
-        }
-      }
+    if (!openReceipt || !net?.tabAddress) return null
+    try {
+      const parsed = parseEventLogs({
+        abi: TAB_ABI,
+        eventName: 'TabOpened',
+        logs: openReceipt.logs.filter(
+          l => l.address.toLowerCase() === net.tabAddress.toLowerCase(),
+        ),
+      })
+      if (parsed.length === 0) return null
+      const first = parsed[0] as unknown as { args: { tabId?: bigint } }
+      return first.args.tabId ?? null
+    } catch {
+      return null
     }
-    return null
   })()
 
   if (openSuccess && tabId !== null && lastTabId !== tabId) {
