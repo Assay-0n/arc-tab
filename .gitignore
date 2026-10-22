@@ -1,0 +1,6 @@
+node_modules/
+dist/
+contracts/cache/
+contracts/out/*
+!contracts/out/Tab.sol/
+.env*
